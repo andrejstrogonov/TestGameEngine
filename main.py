@@ -3,16 +3,16 @@ from typing import Tuple
 
 import numpy as np
 import pygame
+import torch
 
-# Try to import CuPy for GPU acceleration
-try:
-    import cupy as cp
-    GPU_AVAILABLE = True
-    print("GPU acceleration enabled with CuPy")
-except ImportError:
-    GPU_AVAILABLE = False
-    print("CuPy not available, falling back to CPU (NumPy)")
-    cp = np  # Fallback to NumPy if CuPy is not available
+# Check for GPU availability
+GPU_AVAILABLE = torch.cuda.is_available()
+DEVICE = torch.device("cuda" if GPU_AVAILABLE else "cpu")
+
+if GPU_AVAILABLE:
+    print(f"GPU acceleration enabled with PyTorch on {torch.cuda.get_device_name(0)}")
+else:
+    print("GPU not available, using CPU (PyTorch)")
 
 # Initialize Pygame
 pygame.init()
@@ -35,63 +35,110 @@ ZOOM_SPEED = 50
 
 
 class Vector3:
-    """3D Vector class for basic 3D math"""
-    def __init__(self, x: float = 0, y: float = 0, z: float = 0):
-        self.x = x
-        self.y = y
-        self.z = z
+    """3D Vector class using PyTorch tensors for GPU acceleration"""
+    def __init__(self, x: float = 0, y: float = 0, z: float = 0, device: torch.device = None):
+        """
+        Initialize a 3D vector using PyTorch tensors.
+        
+        Args:
+            x, y, z: Vector components (floats)
+            device: PyTorch device (defaults to global DEVICE)
+        """
+        if device is None:
+            device = DEVICE
+        
+        # Store as PyTorch tensor for GPU acceleration
+        self.data = torch.tensor([x, y, z], dtype=torch.float32, device=device)
+    
+    @property
+    def x(self) -> float:
+        """Get x component"""
+        return float(self.data[0].cpu().item())
+    
+    @property
+    def y(self) -> float:
+        """Get y component"""
+        return float(self.data[1].cpu().item())
+    
+    @property
+    def z(self) -> float:
+        """Get z component"""
+        return float(self.data[2].cpu().item())
     
     def __add__(self, other: 'Vector3') -> 'Vector3':
-        return Vector3(self.x + other.x, self.y + other.y, self.z + other.z)
+        """Add two vectors"""
+        result = self.data + other.data
+        return Vector3(float(result[0]), float(result[1]), float(result[2]), device=self.data.device)
     
     def __sub__(self, other: 'Vector3') -> 'Vector3':
-        return Vector3(self.x - other.x, self.y - other.y, self.z - other.z)
+        """Subtract two vectors"""
+        result = self.data - other.data
+        return Vector3(float(result[0]), float(result[1]), float(result[2]), device=self.data.device)
     
     def __mul__(self, scalar: float) -> 'Vector3':
-        return Vector3(self.x * scalar, self.y * scalar, self.z * scalar)
+        """Multiply vector by scalar"""
+        result = self.data * scalar
+        return Vector3(float(result[0]), float(result[1]), float(result[2]), device=self.data.device)
+    
+    def __rmul__(self, scalar: float) -> 'Vector3':
+        """Right multiply vector by scalar"""
+        return self.__mul__(scalar)
     
     def __truediv__(self, scalar: float) -> 'Vector3':
+        """Divide vector by scalar"""
         if scalar == 0:
             raise ValueError("Cannot divide by zero")
-        return Vector3(self.x / scalar, self.y / scalar, self.z / scalar)
+        result = self.data / scalar
+        return Vector3(float(result[0]), float(result[1]), float(result[2]), device=self.data.device)
     
     def dot(self, other: 'Vector3') -> float:
         """Calculate dot product"""
-        return self.x * other.x + self.y * other.y + self.z * other.z
+        return float(torch.dot(self.data, other.data).cpu().item())
     
     def cross(self, other: 'Vector3') -> 'Vector3':
         """Calculate cross product"""
-        return Vector3(
-            self.y * other.z - self.z * other.y,
-            self.z * other.x - self.x * other.z,
-            self.x * other.y - self.y * other.x
-        )
+        result = torch.cross(self.data, other.data)
+        return Vector3(float(result[0]), float(result[1]), float(result[2]), device=self.data.device)
     
     def magnitude(self) -> float:
         """Calculate vector magnitude (length)"""
-        return math.sqrt(self.x ** 2 + self.y ** 2 + self.z ** 2)
+        return float(torch.norm(self.data).cpu().item())
     
     def normalize(self) -> 'Vector3':
         """Return normalized vector (unit vector)"""
         mag = self.magnitude()
         if mag == 0:
-            return Vector3(0, 0, 0)
+            return Vector3(0, 0, 0, device=self.data.device)
         return self / mag
     
     def to_numpy(self) -> np.ndarray:
         """Convert to numpy array"""
-        return np.array([self.x, self.y, self.z], dtype=np.float32)
+        return self.data.cpu().numpy().astype(np.float32)
+    
+    def to_tensor(self) -> torch.Tensor:
+        """Get underlying PyTorch tensor"""
+        return self.data
     
     @staticmethod
-    def from_numpy(arr) -> 'Vector3':
-        """Create from numpy/cupy array"""
-        if GPU_AVAILABLE and isinstance(arr, cp.ndarray):
-            arr = cp.asnumpy(arr)
-        return Vector3(float(arr[0]), float(arr[1]), float(arr[2]))
+    def from_numpy(arr, device: torch.device = None) -> 'Vector3':
+        """Create from numpy array or torch tensor"""
+        if device is None:
+            device = DEVICE
+        
+        if isinstance(arr, torch.Tensor):
+            arr = arr.cpu().numpy()
+        
+        return Vector3(float(arr[0]), float(arr[1]), float(arr[2]), device=device)
+    
+    @staticmethod
+    def from_tensor(tensor: torch.Tensor) -> 'Vector3':
+        """Create from PyTorch tensor"""
+        return Vector3(float(tensor[0]), float(tensor[1]), float(tensor[2]), device=tensor.device)
     
     def project_2d(self, distance: float = 500) -> Tuple[float, float]:
         """Project 3D point to 2D screen coordinates"""
-        scale = distance / (distance + self.z)
+        z_val = self.z
+        scale = distance / (distance + z_val)
         x = self.x * scale + SCREEN_WIDTH / 2
         y = -self.y * scale + SCREEN_HEIGHT / 2
         return (x, y)
@@ -223,52 +270,56 @@ class Quaternion:
 
 
 class GPUQuaternionRotator:
-    """GPU-accelerated quaternion rotation using CuPy"""
+    """GPU-accelerated quaternion rotation using PyTorch"""
     def __init__(self, quaternion: Quaternion):
         self.q = quaternion
         self.q_conj = quaternion.conjugate()
         self.q_inv = quaternion.inverse()
+        
+        # Pre-compute quaternion components as tensors for GPU
+        self.w = torch.tensor(quaternion.w, dtype=torch.float32, device=DEVICE)
+        self.x = torch.tensor(quaternion.x, dtype=torch.float32, device=DEVICE)
+        self.y = torch.tensor(quaternion.y, dtype=torch.float32, device=DEVICE)
+        self.z = torch.tensor(quaternion.z, dtype=torch.float32, device=DEVICE)
+        
+        self.w_inv = torch.tensor(quaternion.inverse().w, dtype=torch.float32, device=DEVICE)
+        self.x_inv = torch.tensor(quaternion.inverse().x, dtype=torch.float32, device=DEVICE)
+        self.y_inv = torch.tensor(quaternion.inverse().y, dtype=torch.float32, device=DEVICE)
+        self.z_inv = torch.tensor(quaternion.inverse().z, dtype=torch.float32, device=DEVICE)
     
-    def rotate_batch_gpu(self, vertices_gpu) -> 'cp.ndarray':
+    def rotate_batch_gpu(self, vertices_tensor: torch.Tensor) -> torch.Tensor:
         """
         Rotate a batch of vertices on GPU using quaternion.
         
         Args:
-            vertices_gpu: GPU array of shape (N, 3) containing vertices
+            vertices_tensor: PyTorch tensor of shape (N, 3) containing vertices
         
         Returns:
-            GPU array of rotated vertices
+            PyTorch tensor of rotated vertices
         """
-        # Extract quaternion components
-        w, x, y, z = self.q.w, self.q.x, self.q.y, self.q.z
-        w_inv, x_inv, y_inv, z_inv = self.q_inv.w, self.q_inv.x, self.q_inv.y, self.q_inv.z
-        
         # Extract vertex components
-        vx = vertices_gpu[:, 0]
-        vy = vertices_gpu[:, 1]
-        vz = vertices_gpu[:, 2]
+        vx = vertices_tensor[:, 0]
+        vy = vertices_tensor[:, 1]
+        vz = vertices_tensor[:, 2]
         
         # First multiplication: q * v (where v is treated as quaternion with w=0)
-        # q * v = (w*vx + x*0 - y*vz + z*vy, x*vx + w*vy + y*0 - z*vz, ...)
-        # Simplified: q * v
-        qv_w = -x * vx - y * vy - z * vz
-        qv_x = w * vx + y * vz - z * vy
-        qv_y = w * vy + z * vx - x * vz
-        qv_z = w * vz + x * vy - y * vx
+        qv_w = -self.x * vx - self.y * vy - self.z * vz
+        qv_x = self.w * vx + self.y * vz - self.z * vy
+        qv_y = self.w * vy + self.z * vx - self.x * vz
+        qv_z = self.w * vz + self.x * vy - self.y * vx
         
         # Second multiplication: (q*v) * q^-1
-        # Result components
-        rx = qv_w * x_inv + qv_x * w_inv + qv_y * z_inv - qv_z * y_inv
-        ry = qv_w * y_inv - qv_x * z_inv + qv_y * w_inv + qv_z * x_inv
-        rz = qv_w * z_inv + qv_x * y_inv - qv_y * x_inv + qv_z * w_inv
+        rx = qv_w * self.x_inv + qv_x * self.w_inv + qv_y * self.z_inv - qv_z * self.y_inv
+        ry = qv_w * self.y_inv - qv_x * self.z_inv + qv_y * self.w_inv + qv_z * self.x_inv
+        rz = qv_w * self.z_inv + qv_x * self.y_inv - qv_y * self.x_inv + qv_z * self.w_inv
         
         # Stack results
-        rotated = cp.stack([rx, ry, rz], axis=1)
+        rotated = torch.stack([rx, ry, rz], dim=1)
         return rotated
 
 
 class Airplane:
-    """3D Airplane model with GPU acceleration using CuPy"""
+    """3D Airplane model with GPU acceleration using PyTorch"""
     def __init__(self, obj_path: str):
         self.rotation = Quaternion(1, 0, 0, 0)  # Identity quaternion
         self.position = Vector3(0, 0, 0)
@@ -277,7 +328,7 @@ class Airplane:
         # Load OBJ model
         self.vertices = []
         self.vertices_np = None  # NumPy array
-        self.vertices_gpu = None  # GPU array (CuPy)
+        self.vertices_gpu = None  # GPU tensor (PyTorch)
         self.faces = []
         self.load_obj(obj_path)
         
@@ -334,13 +385,13 @@ class Airplane:
                 
                 # Transfer to GPU if available
                 if GPU_AVAILABLE:
-                    self.vertices_gpu = cp.asarray(self.vertices_np)
+                    self.vertices_gpu = torch.from_numpy(self.vertices_np).to(DEVICE)
             
             print(f"Loaded airplane model: {len(self.vertices)} vertices, {len(self.faces)} faces")
             if GPU_AVAILABLE:
-                print(f"GPU acceleration: ENABLED")
+                print(f"GPU acceleration: ENABLED (PyTorch on {torch.cuda.get_device_name(0)})")
             else:
-                print(f"GPU acceleration: DISABLED (CuPy not available)")
+                print(f"GPU acceleration: DISABLED (CPU only)")
         except FileNotFoundError:
             print(f"Error: Could not find OBJ file at {obj_path}")
             # Create a simple fallback cube
@@ -380,7 +431,7 @@ class Airplane:
         
         # Transfer to GPU if available
         if GPU_AVAILABLE:
-            self.vertices_gpu = cp.asarray(self.vertices_np)
+            self.vertices_gpu = torch.from_numpy(self.vertices_np).to(DEVICE)
     
     def calculate_bounds(self):
         """Calculate bounding box and scale model appropriately"""
@@ -446,7 +497,7 @@ class Airplane:
             return self.transformed_vertices_cache
         
         # Center the model on GPU
-        center_offset_gpu = cp.asarray(self.center_offset.to_numpy())
+        center_offset_gpu = torch.from_numpy(self.center_offset.to_numpy()).to(DEVICE)
         centered_gpu = self.vertices_gpu - center_offset_gpu
         
         # Apply scale on GPU
@@ -459,11 +510,11 @@ class Airplane:
         rotated_gpu = self.gpu_rotator.rotate_batch_gpu(scaled_gpu)
         
         # Apply position on GPU
-        position_gpu = cp.asarray(self.position.to_numpy())
+        position_gpu = torch.from_numpy(self.position.to_numpy()).to(DEVICE)
         transformed_gpu = rotated_gpu + position_gpu
         
         # Transfer back to CPU for rendering
-        transformed = cp.asnumpy(transformed_gpu)
+        transformed = transformed_gpu.cpu().numpy()
         
         # Cache the result
         self.transformed_vertices_cache = transformed
